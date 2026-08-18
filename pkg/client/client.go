@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -17,24 +18,29 @@ import (
 	"github.com/kayrus/gof5/pkg/config"
 	"github.com/kayrus/gof5/pkg/cookie"
 	"github.com/kayrus/gof5/pkg/link"
+	"github.com/kayrus/gof5/pkg/oauth"
 )
 
 type Options struct {
 	config.Config
-	Server        string
-	Username      string
-	Password      string
-	SessionID     string
-	CACert        string
-	Cert          string
-	Key           string
-	CloseSession  bool
-	Debug         bool
-	Sel           bool
-	Version       bool
-	ProfileIndex  int
-	ProfileName   string
-	Renegotiation tls.RenegotiationSupport
+	Server               string
+	Username             string
+	Password             string
+	SessionID            string
+	CACert               string
+	Cert                 string
+	Key                  string
+	CloseSession         bool
+	Debug                bool
+	Sel                  bool
+	Version              bool
+	ProfileIndex         int
+	ProfileName          string
+	Renegotiation        tls.RenegotiationSupport
+	UseOAuth             bool
+	OAuthRedirectURL     string
+	OAuthAutoOpenBrowser bool
+	OAuthUseRealHostname bool
 }
 
 func UrlHandlerF5Vpn(opts *Options, s string) error {
@@ -82,7 +88,7 @@ func UrlHandlerF5Vpn(opts *Options, s string) error {
 	return nil
 }
 
-func Connect(opts *Options) error {
+func Connect(ctx context.Context, opts *Options) error {
 	if opts.Server == "" {
 		fmt.Print("Enter server address: ")
 		fmt.Scanln(&opts.Server)
@@ -165,8 +171,9 @@ func Connect(opts *Options) error {
 
 	if len(client.Jar.Cookies(u)) == 0 {
 		// need to login
-		if err := login(client, opts.Server, &opts.Username, &opts.Password); err != nil {
-			return fmt.Errorf("failed to login: %s", err)
+		err = handleLogin(ctx, opts, client)
+		if err != nil {
+			return err
 		}
 	} else {
 		log.Printf("Reusing saved HTTPS VPN session for %s", u.Host)
@@ -185,8 +192,8 @@ func Connect(opts *Options) error {
 		}
 		resp.Body.Close()
 
-		if err := login(client, opts.Server, &opts.Username, &opts.Password); err != nil {
-			return fmt.Errorf("failed to login: %s", err)
+		if err := handleLogin(ctx, opts, client); err != nil {
+			return err
 		}
 
 		// new request
@@ -303,4 +310,63 @@ func Connect(opts *Options) error {
 	close(l.TunDown)
 
 	return err
+}
+
+func handleLogin(ctx context.Context, opts *Options, client *http.Client) error {
+	if !opts.UseOAuth {
+		err := login(client, opts.Server, &opts.Username, &opts.Password)
+		if err != nil {
+			return fmt.Errorf("failed to login: %w", err)
+		}
+		return nil
+	}
+
+	if opts.OAuthRedirectURL == "" {
+		return fmt.Errorf("OAuth redirect URI is required when OAuth is enabled")
+	}
+
+	url, oauth2Config, err := getOAuthRequestURL(client, opts.Server, opts.OAuthRedirectURL)
+	if err != nil {
+		return err
+	}
+
+	redirectURI, err := url.Parse(opts.OAuthRedirectURL)
+	if err != nil {
+		return err
+	}
+
+	oauthCode, err := oauth.StartOAuthFlow(ctx, redirectURI.Host, url.String(), opts.OAuthAutoOpenBrowser)
+	if err != nil {
+		return err
+	}
+
+	oauthToken, err := exchangeOAuthCodeForToken(client, oauth2Config, opts.OAuthRedirectURL, oauthCode)
+	if err != nil {
+		return err
+	}
+
+	session, err := exchangeBearerForF5Token(client, opts.Server, oauthToken.AccessToken)
+	if err != nil {
+		return err
+	}
+
+	hostname := defaultHostname
+	if opts.OAuthUseRealHostname {
+		hostname, err = os.Hostname()
+		if err != nil {
+			return fmt.Errorf("failed to get hostname: %w", err)
+		}
+	}
+
+	err = submitOAuthPolicy(client, opts.Server, session, hostname)
+	if err != nil {
+		return err
+	}
+
+	err = validateOAuthSession(client, opts.Server)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

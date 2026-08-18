@@ -422,7 +422,7 @@ type AgentInfo struct {
 	MACAddress           string   `xml:"mac_address,omitempty"`
 	UniqueID             string   `xml:"unique_id,omitempty"`
 	SerialNumber         string   `xml:"serial_number,omitempty"`
-	AppID                string   `xml:"app_id,omitempty"`
+	AppID                string   `xml:"app_id"`
 	AppVersion           string   `xml:"app_version,omitempty"`
 	JailBreak            *Bool    `xml:"jailbreak,omitempty"`
 	VPNScope             string   `xml:"vpn_scope,omitempty"`
@@ -448,11 +448,30 @@ type PreConfigProfile struct {
 	Servers   []Server         `xml:"SERVERS>SITEM"`
 	Session   preConfigSession `xml:"SESSION"`
 	DNSSuffix []string         `xml:"LOCATIONS>CORPORATE>DNSSUFFIX"`
+	OAuth2    OAuth2           `xml:"AUTH>OAUTH2"`
 }
 
 type Server struct {
 	Address string `xml:"ADDRESS"`
 	Alias   string `xml:"ALIAS"`
+}
+
+type OAuth2 struct {
+	DoneURI               string `xml:"DONE_URI"`
+	OpenIDURI             string `xml:"OPENID_URI"`
+	UserInfoEndpoint      string `xml:"USERINFO_ENDPOINT"`
+	AuthorizationEndpoint string `xml:"AUTHORIZATION_ENDPOINT"`
+	TokenEndpoint         string `xml:"TOKEN_ENDPOINT"`
+	DiscoveryEndpoint     string `xml:"DISCOVERY_ENDPOINT"`
+	ClientID              string `xml:"CLIENT_ID"`
+	Scopes                string `xml:"SCOPES"`
+}
+
+type OAuthTokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	TokenType    string `json:"token_type"`
+	ExpiresIn    int    `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type preConfigSession struct {

@@ -88,6 +88,11 @@ $ make docker
 $ sudo gof5 --server server --username username --password token
 ```
 
+If your instance uses OAuth2 to login
+```sh
+$ sudo gof5 --server server --oauth --oauth-redirect-url <redirect-uri registered on oauth app>
+```
+
 Alternatively you can use a session ID, obtained during the web browser authentication (in case, when you have MFA). You can find the session ID by going to the VPN host in a web browser, logging in, and running this JavaScript in Developer Tools:
 
 ```js

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -17,7 +18,6 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 
 	"github.com/kayrus/gof5/pkg/config"
@@ -30,6 +30,8 @@ import (
 const (
 	userAgent        = "Mozilla/5.0 (X11; U; Linux i686; en-US; rv:1.9.1a2pre) Gecko/2008073000 Shredder/3.0a2pre ThunderBrowse/3.2.1.8"
 	androidUserAgent = "Mozilla/5.0 (Linux; Android 10; SM-G975F Build/QP1A.190711.020) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/81.0.4044.138 Mobile Safari/537.36 EdgeClient/3.0.7 F5Access/3.0.7"
+	edgeUserAgent    = "Mozilla/5.0 (Windows NT 10.0; WOW64; Trident/7.0; rv:11.0) like Gecko EdgeClient/7262.2025.1203.0525"
+	defaultHostname  = "test"
 )
 
 func tlsConfig(opts *Options, insecure bool) (*tls.Config, error) {
@@ -111,9 +113,34 @@ func checkRedirect(c *http.Client) func(*http.Request, []*http.Request) error {
 // 64-byte HMAC key
 var hmacKey, _ = hex.DecodeString(
 	"4342a2ee5e546d98bd24e014218c8b8d" +
-	"c18531bd538c4694b720043435367edb" +
-	"f5dd67a9f6da42b58d28b27710c39b1a" +
-	"b4cb386acdae4e08bd328d8a45b0b082")
+		"c18531bd538c4694b720043435367edb" +
+		"f5dd67a9f6da42b58d28b27710c39b1a" +
+		"b4cb386acdae4e08bd328d8a45b0b082",
+)
+
+func generateClientDataFromInfo(info config.AgentInfo, sessionToken string) (string, error) {
+	data, err := xml.Marshal(info)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal agent info: %w", err)
+	}
+	values := &bytes.Buffer{}
+	values.WriteString("session=&")
+	values.WriteString("device_info=" + base64.StdEncoding.EncodeToString(data) + "&")
+	values.WriteString("agent_result=&")
+	values.WriteString("token=" + sessionToken)
+
+	// HMAC-MD5 with the 64-byte key
+	h := hmac.New(md5.New, hmacKey)
+	_, err = h.Write(values.Bytes())
+	if err != nil {
+		return "", err
+	}
+	sig := base64.StdEncoding.EncodeToString(h.Sum(nil))
+
+	values.WriteString("&signature=" + sig)
+
+	return base64.StdEncoding.EncodeToString(values.Bytes()), nil
+}
 
 func generateClientData(cData config.ClientData) (string, error) {
 	info := config.AgentInfo{
@@ -122,33 +149,27 @@ func generateClientData(cData config.ClientData) (string, error) {
 		Platform:   "Linux",
 		CPU:        "x64",
 		LandingURI: "/",
-		Hostname:   "test",
+		Hostname:   defaultHostname,
 	}
 
-	data, err := xml.Marshal(info)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal agent info: %s", err)
+	return generateClientDataFromInfo(info, cData.Token)
+}
+
+func generateEdgeClientData(sessionToken string, hostname string) (string, error) {
+	info := config.AgentInfo{
+		Type:       "standalone",
+		Version:    "2.0",
+		Platform:   "Win11",
+		CPU:        "wow64",
+		JavaScript: true,
+		ActiveX:    true,
+		Plugin:     false,
+		LandingURI: "/",
+		LockedMode: false,
+		Hostname:   config.Hostname(hostname),
+		AppID:      "edge",
 	}
-
-	if info.AppID == "" {
-		r := regexp.MustCompile("></agent_info>")
-		data = []byte(r.ReplaceAllString(string(data), "><app_id></app_id></agent_info>"))
-	}
-
-	values := &bytes.Buffer{}
-	values.WriteString("session=&")
-	values.WriteString("device_info=" + base64.StdEncoding.EncodeToString(data) + "&")
-	values.WriteString("agent_result=&")
-	values.WriteString("token=" + cData.Token)
-
-	// HMAC-MD5 with the 64-byte key
-	h := hmac.New(md5.New, hmacKey)
-	h.Write(values.Bytes())
-	sig := base64.StdEncoding.EncodeToString(h.Sum(nil))
-
-	values.WriteString("&signature=" + sig)
-
-	return base64.StdEncoding.EncodeToString(values.Bytes()), nil
+	return generateClientDataFromInfo(info, sessionToken)
 }
 
 func loginSignature(c *http.Client, server string, _, _ *string) error {
@@ -324,7 +345,6 @@ func getConnectionOptions(c *http.Client, opts *Options, profile string) (*confi
 	}
 	req.Header.Set("User-Agent", userAgent)
 	resp, err := c.Do(req)
-
 	if err != nil {
 		log.Printf("Failed to read a request: %s", err)
 		log.Printf("Override link DNS values from config")
@@ -415,4 +435,172 @@ func getServersList(c *http.Client, server string) (*url.URL, error) {
 	}
 
 	return u, nil
+}
+
+func getOAuthRequestURL(c *http.Client, server string, redirectURI string) (*url.URL, *config.OAuth2, error) {
+	r, err := http.NewRequest("GET", fmt.Sprintf("https://%s/pre/config.php?version=2.0", server), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create a request to get oauth configuration: %w", err)
+	}
+	resp, err := c.Do(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to request oauth configuration: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var s config.PreConfigProfile
+	dec := xml.NewDecoder(resp.Body)
+	err = dec.Decode(&s)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to unmarshal oauth configuration: %w", err)
+	}
+
+	u, err := url.Parse(s.OAuth2.AuthorizationEndpoint)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse authorization endpoint: %w", err)
+	}
+
+	q := make(url.Values)
+	q.Set("client_id", s.OAuth2.ClientID)
+	q.Set("redirect_uri", redirectURI)
+	q.Set("response_type", "code")
+	q.Set("scope", s.OAuth2.Scopes)
+	u.RawQuery = q.Encode()
+
+	return u, &s.OAuth2, nil
+}
+
+func exchangeOAuthCodeForToken(c *http.Client, oAuth2Config *config.OAuth2, redirectURI string, code string) (*config.OAuthTokenResponse, error) {
+	form := make(url.Values)
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", redirectURI)
+	form.Set("client_id", oAuth2Config.ClientID)
+
+	req, err := http.NewRequest(http.MethodPost, oAuth2Config.TokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to request oauth token endpoint: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token endpoint returned status %d", resp.StatusCode)
+	}
+
+	var token config.OAuthTokenResponse
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&token); err != nil {
+		return nil, fmt.Errorf("failed to parse token response (parseTokenResponse): %w", err)
+	}
+	if token.AccessToken == "" {
+		return nil, fmt.Errorf("token response missing access_token (\"Failed to obtain authorization token\")")
+	}
+	return &token, nil
+}
+
+func exchangeBearerForF5Token(c *http.Client, server string, accessToken string) (*config.Session, error) {
+	logonURL := fmt.Sprintf("https://%s/my.logon.php3?outform=xml&get_token=1&client_version=2.0", server)
+
+	req, err := http.NewRequest(http.MethodGet, logonURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-AU")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.Header.Set("User-Agent", edgeUserAgent)
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange oauth access_token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
+	}
+
+	var lr *config.Session
+	decoder := xml.NewDecoder(resp.Body)
+	if err := decoder.Decode(&lr); err != nil {
+		return nil, fmt.Errorf("failed to parse logon response XML: %w", err)
+	}
+
+	if lr.Token == "" {
+		return nil, fmt.Errorf("logon response missing <token>: %v", *lr)
+	}
+
+	return lr, nil
+}
+
+func submitOAuthPolicy(c *http.Client, server string, session *config.Session, hostname string) error {
+	edgeClientData, err := generateEdgeClientData(session.Token, hostname)
+	if err != nil {
+		return fmt.Errorf("failed to generate client_data: %w", err)
+	}
+
+	form := make(url.Values)
+	form.Set("client_data", edgeClientData)
+
+	loginRedirectURL := session.RedirectURL
+	if loginRedirectURL == "" {
+		log.Printf("WARNING: logon response missing <redirect_url>, defaulting to /my.policy\n")
+		loginRedirectURL = "my.policy"
+	}
+
+	policyURL := fmt.Sprintf("https://%s/%s", server, strings.TrimLeft(loginRedirectURL, "/"))
+	req, err := http.NewRequest(http.MethodPost, policyURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-AU")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.Header.Set("User-Agent", edgeUserAgent)
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := c.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to submit oauth policy: %w", err)
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+func validateOAuthSession(c *http.Client, server string) error {
+	sessionURL := fmt.Sprintf("https://%s/vdesk/sessioninfo?outform=xml", server)
+
+	req, err := http.NewRequest(http.MethodGet, sessionURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-AU")
+	req.Header.Set("Accept-Encoding", "gzip, deflate")
+	req.Header.Set("User-Agent", edgeUserAgent)
+
+	resp, err := c.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to request oauth session: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("validateOAuthSession: status %d", resp.StatusCode)
+	}
+
+	// TODO: Read the body out at some point, has inactiveTimeout, and maxSessionTimeout, etc
+	return nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -43,6 +44,10 @@ func main() {
 	flag.BoolVar(&opts.Sel, "select", false, "Select a server from available F5 servers")
 	flag.IntVar(&opts.ProfileIndex, "profile-index", 0, "If multiple VPN profiles are found chose profile n")
 	flag.BoolVar(&version, "version", false, "Show version and exit cleanly")
+	flag.BoolVar(&opts.UseOAuth, "oauth", false, "Use OAuth2 login flow")
+	flag.StringVar(&opts.OAuthRedirectURL, "oauth-redirect-url", "", "The exact redirect url used in the oauth worflow for official clients")
+	flag.BoolVar(&opts.OAuthAutoOpenBrowser, "oauth-open-browser", true, "Automatically attempt to open browser when OAuth2 token is requested")
+	flag.BoolVar(&opts.OAuthUseRealHostname, "oauth-use-real-hostname", true, "Provide the real system hostname when performing OAuth2 authentication")
 
 	flag.Parse()
 
@@ -67,7 +72,8 @@ func main() {
 		}
 	}
 
-	if err := client.Connect(&opts); err != nil {
+	ctx := context.Background()
+	if err := client.Connect(ctx, &opts); err != nil {
 		fatal(err)
 	}
 }
