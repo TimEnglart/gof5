@@ -236,7 +236,9 @@ func (o *Object) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	}
 
 	if v := strings.TrimSpace(s.DNSSuffix); v != "" {
-		o.DNSSuffix = strings.Split(v, ",")
+		for dnsSuffix := range strings.SplitSeq(v, ",") {
+			o.DNSSuffix = append(o.DNSSuffix, strings.TrimSpace(dnsSuffix))
+		}
 	}
 
 	return nil
