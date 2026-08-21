@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -13,6 +14,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/kayrus/gof5/pkg/config"
 	"github.com/kayrus/gof5/pkg/cookie"
@@ -36,6 +38,8 @@ type Options struct {
 	ProfileName   string
 	Renegotiation tls.RenegotiationSupport
 }
+
+var errRetryConnection = errors.New("retryable connection error")
 
 func UrlHandlerF5Vpn(opts *Options, s string) error {
 	u, err := url.Parse(s)
@@ -222,6 +226,38 @@ func Connect(opts *Options) error {
 		defer closeVPNSession(client, opts.Server)
 	}
 
+	retryAttempt := 0
+	lastAttempt := time.Now()
+	for {
+		err = createVPNTunnel(ctx, opts, cfg, tlsConf)
+		if err != nil && !errors.Is(err, errRetryConnection) {
+			return err
+		}
+
+		failureTime := time.Now()
+		// Reset failure counter if the connection lasted at least 2 minutes
+		if failureTime.Sub(lastAttempt).Abs() >= 2*time.Minute {
+			retryAttempt = 0
+		}
+
+		retryAttempt++
+		if cfg.MaxRetries >= 0 && retryAttempt > cfg.MaxRetries {
+			return fmt.Errorf("exceeded maximum connection retry attempts (%d): %w", cfg.MaxRetries, err)
+		}
+
+		lastAttempt = failureTime
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(1 * time.Second):
+		}
+
+		log.Print("Connection failure occurred, attempting to reconnect")
+	}
+}
+
+func createVPNTunnel(ctx context.Context, opts *Options, cfg *config.Config, tlsConf *tls.Config) error {
 	// TLS
 	l, err := link.InitConnection(opts.Server, cfg, tlsConf)
 	if err != nil {
@@ -288,19 +324,26 @@ func Connect(opts *Options) error {
 
 		// tun->http go routine
 		go l.TunToHTTP()
+
+		// notify tun readers and writes to stop
+		defer close(l.TunDown)
 	}
 
 	select {
 	case sig := <-termChan:
-		log.Printf("received %s signal, exiting", sig)
+		// Consider sigpipe to be a retryable error
+		if sig == syscall.SIGPIPE {
+			return fmt.Errorf("received broken pipe signal: %w", errRetryConnection)
+		}
+		return fmt.Errorf("received %s signal", sig)
+		// Some os signal received
 	case err = <-l.ErrChan:
 		// error received
 	case err = <-l.PppdErrChan:
-		// ppp/pppd child error received
+	// ppp/pppd child error received
+	case <-ctx.Done():
+		err = ctx.Err()
 	}
-
-	// notify tun readers and writes to stop
-	close(l.TunDown)
 
 	return err
 }

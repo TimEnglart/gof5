@@ -43,6 +43,8 @@ type Config struct {
 	Gid int `yaml:"-"`
 	// Config, returned by F5
 	F5Config *Favorite `yaml:"-"`
+	// Maximum retries on a connection failure event to re-establish connection (-1 is unlimited, 0 is no retry)
+	MaxRetries int `yaml:"maxRetries"`
 }
 
 func (r *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
