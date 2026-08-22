@@ -40,7 +40,6 @@ type Options struct {
 	UseOAuth             bool
 	OAuthRedirectURL     string
 	OAuthAutoOpenBrowser bool
-	OAuthUseRealHostname bool
 }
 
 func UrlHandlerF5Vpn(opts *Options, s string) error {
@@ -350,15 +349,7 @@ func handleLogin(ctx context.Context, opts *Options, client *http.Client) error 
 		return err
 	}
 
-	hostname := defaultHostname
-	if opts.OAuthUseRealHostname {
-		hostname, err = os.Hostname()
-		if err != nil {
-			return fmt.Errorf("failed to get hostname: %w", err)
-		}
-	}
-
-	err = submitOAuthPolicy(client, opts.Server, session, hostname)
+	err = submitOAuthPolicy(client, opts.Server, session)
 	if err != nil {
 		return err
 	}

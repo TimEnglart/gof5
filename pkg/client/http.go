@@ -155,7 +155,7 @@ func generateClientData(cData config.ClientData) (string, error) {
 	return generateClientDataFromInfo(info, cData.Token)
 }
 
-func generateEdgeClientData(sessionToken string, hostname string) (string, error) {
+func generateEdgeClientData(sessionToken string) (string, error) {
 	info := config.AgentInfo{
 		Type:       "standalone",
 		Version:    "2.0",
@@ -166,7 +166,7 @@ func generateEdgeClientData(sessionToken string, hostname string) (string, error
 		Plugin:     false,
 		LandingURI: "/",
 		LockedMode: false,
-		Hostname:   config.Hostname(hostname),
+		Hostname:   defaultHostname,
 		AppID:      "edge",
 	}
 	return generateClientDataFromInfo(info, sessionToken)
@@ -543,8 +543,8 @@ func exchangeBearerForF5Token(c *http.Client, server string, accessToken string)
 	return lr, nil
 }
 
-func submitOAuthPolicy(c *http.Client, server string, session *config.Session, hostname string) error {
-	edgeClientData, err := generateEdgeClientData(session.Token, hostname)
+func submitOAuthPolicy(c *http.Client, server string, session *config.Session) error {
+	edgeClientData, err := generateEdgeClientData(session.Token)
 	if err != nil {
 		return fmt.Errorf("failed to generate client_data: %w", err)
 	}

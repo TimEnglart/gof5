@@ -47,7 +47,6 @@ func main() {
 	flag.BoolVar(&opts.UseOAuth, "oauth", false, "Use OAuth2 login flow")
 	flag.StringVar(&opts.OAuthRedirectURL, "oauth-redirect-url", "", "The exact redirect url used in the oauth worflow for official clients")
 	flag.BoolVar(&opts.OAuthAutoOpenBrowser, "oauth-open-browser", true, "Automatically attempt to open browser when OAuth2 token is requested")
-	flag.BoolVar(&opts.OAuthUseRealHostname, "oauth-use-real-hostname", true, "Provide the real system hostname when performing OAuth2 authentication")
 
 	flag.Parse()
 
