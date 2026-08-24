@@ -71,7 +71,6 @@ func (r *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		r.ListenDNS = net.ParseIP(*s.ListenDNS)
 	}
 
-	r.Routes = new(netaddr.IPSet)
 	if s.Routes != nil {
 		// handle the case, when routes is an empty list
 		parsedCIDRs, err := parseCIDRs(s.Routes, net.IPv4len)
